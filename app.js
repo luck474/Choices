@@ -43,6 +43,12 @@ let dragState = null;
 let suppressNodeClickId = null;
 let view = { x: -110, y: -360, scale: 0.75 };
 
+// Motion: gate entrance animations so they only play on first load or for
+// freshly created elements — never replay during drag/select re-renders.
+let introPending = true;
+const pendingEnterIds = new Set();
+const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 const $ = (selector) => document.querySelector(selector);
 const nodesLayer = $("#nodesLayer");
 const edgeGroup = $("#edgeGroup");
@@ -98,14 +104,28 @@ function render() {
   renderMinimap();
   renderDetails();
   applyTransform();
+  introPending = false;
+  pendingEnterIds.clear();
+}
+
+// Smoothly animate the camera for deliberate moves (select / fit / tab switch)
+// without affecting hand-driven drag or wheel zoom.
+function smoothPan(run) {
+  if (prefersReducedMotion) return run();
+  graphWorld.classList.add("smooth");
+  run();
+  clearTimeout(smoothPan.timer);
+  smoothPan.timer = setTimeout(() => graphWorld.classList.remove("smooth"), 540);
 }
 
 function renderNodes() {
   nodesLayer.innerHTML = "";
-  model.nodes.forEach((node) => {
+  model.nodes.forEach((node, index) => {
     const element = document.createElement("button");
     const filtered = routeFilter !== "all" && node.route !== routeFilter && node.type !== "current" && node.type !== "birth" && !isPastNode(node);
-    element.className = `graph-node ${node.type} ${node.route} ${node.id === model.currentNodeId ? "current" : ""} ${node.id === selectedId ? "selected" : ""} ${node.id === connectionSource ? "connect-source" : ""} ${isLocked(node) ? "locked" : ""} ${filtered ? "filtered" : ""}`;
+    const entering = !prefersReducedMotion && (introPending || pendingEnterIds.has(node.id));
+    element.className = `graph-node ${node.type} ${node.route} ${node.id === model.currentNodeId ? "current" : ""} ${node.id === selectedId ? "selected" : ""} ${node.id === connectionSource ? "connect-source" : ""} ${isLocked(node) ? "locked" : ""} ${filtered ? "filtered" : ""} ${entering ? "node-enter" : ""}`;
+    if (entering) element.style.setProperty("--enter-delay", `${Math.min(index, 12) * 45}ms`);
     element.dataset.id = node.id;
     element.style.left = `${node.x}px`;
     element.style.top = `${node.y}px`;
@@ -140,9 +160,25 @@ function isPastNode(node) {
   return ["birth", "event"].includes(node.type);
 }
 
+function animateEdgeDraw(pathEl, delay) {
+  const len = pathEl.getTotalLength();
+  if (!len) return;
+  pathEl.style.transition = "none";
+  pathEl.style.strokeDasharray = len;
+  pathEl.style.strokeDashoffset = len;
+  pathEl.getBoundingClientRect(); // force reflow so the start state sticks
+  pathEl.style.transition = `stroke-dashoffset .6s cubic-bezier(.4,0,.2,1) ${delay}ms`;
+  pathEl.style.strokeDashoffset = "0";
+  pathEl.addEventListener("transitionend", function done() {
+    // clear inline styles so the CSS dash pattern / highlight state resumes
+    pathEl.style.transition = pathEl.style.strokeDasharray = pathEl.style.strokeDashoffset = "";
+    pathEl.removeEventListener("transitionend", done);
+  });
+}
+
 function renderEdges() {
   edgeGroup.innerHTML = "";
-  model.edges.forEach((edge) => {
+  model.edges.forEach((edge, index) => {
     const from = getNode(edge.from);
     const to = getNode(edge.to);
     if (!from || !to) return;
@@ -162,6 +198,10 @@ function renderEdges() {
     visibleEl.setAttribute("class", `edge edge-visible ${edge.highlight} ${filtered ? "filtered" : ""}`);
     visibleEl.dataset.edgeId = edge.id;
     edgeGroup.appendChild(visibleEl);
+
+    if (!prefersReducedMotion && !filtered && (introPending || pendingEnterIds.has(edge.from) || pendingEnterIds.has(edge.to))) {
+      animateEdgeDraw(visibleEl, Math.min(index, 12) * 55);
+    }
 
     if (edge.label) {
       const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -297,7 +337,7 @@ function selectNode(id) {
   selectedId = id;
   renderNodes();
   renderDetails();
-  requestAnimationFrame(() => centerNode(id));
+  requestAnimationFrame(() => smoothPan(() => centerNode(id)));
 }
 
 function createEdge(fromId, toId, highlight = edgeHighlightMode) {
@@ -346,6 +386,7 @@ viewport.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   if (event.target.closest(".graph-node, .node-add-button, .edge-hit")) return;
   dragState = { kind: "pan", startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y, moved: false };
+  graphWorld.classList.remove("smooth");
   viewport.classList.add("panning");
 });
 
@@ -380,6 +421,7 @@ window.addEventListener("pointerup", () => {
 
 viewport.addEventListener("wheel", (event) => {
   event.preventDefault();
+  graphWorld.classList.remove("smooth");
   const rect = viewport.getBoundingClientRect();
   const pointerX = event.clientX - rect.left;
   const pointerY = event.clientY - rect.top;
@@ -483,8 +525,9 @@ $("#nodeForm").addEventListener("submit", (event) => {
   saveModel("新节点已添加");
   $("#nodeDialog").close();
   selectedId = node.id;
+  pendingEnterIds.add(node.id);
   render();
-  requestAnimationFrame(() => centerNode(node.id));
+  requestAnimationFrame(() => smoothPan(() => centerNode(node.id)));
   showToast(parent ? "后续节点已添加并连接" : "独立节点已添加");
 });
 
@@ -517,11 +560,18 @@ $("#connectBtn").addEventListener("click", () => {
   showToast(connecting ? "请依次点击起点和目标节点" : "已退出连接模式");
   renderNodes();
 });
-$("#fitBtn").addEventListener("click", fitView);
-$("#resetViewBtn").addEventListener("click", fitView);
+$("#fitBtn").addEventListener("click", () => smoothPan(fitView));
+$("#resetViewBtn").addEventListener("click", () => smoothPan(fitView));
+let toggleLeftTimer;
+$("#toggleLeftBtn").addEventListener("click", (event) => {
+  const collapsed = workspace.classList.toggle("left-collapsed");
+  event.currentTarget.setAttribute("aria-label", collapsed ? "展开侧栏" : "收起侧栏");
+  // once the column-width transition settles, refit so the graph fills the freed space
+  clearTimeout(toggleLeftTimer);
+  toggleLeftTimer = setTimeout(() => { if (viewMode === "timeline") smoothPan(fitView); }, 360);
+});
 $("#zoomInBtn").addEventListener("click", () => setZoom(view.scale * 1.15));
 $("#zoomOutBtn").addEventListener("click", () => setZoom(view.scale * .85));
-$("#dismissTip").addEventListener("click", () => $("#canvasTip").classList.add("hidden"));
 $("#closeDetailBtn").addEventListener("click", () => { selectedId = null; render(); });
 
 document.querySelectorAll(".legend-item").forEach((button) => {
@@ -537,13 +587,15 @@ document.querySelectorAll(".view-tab").forEach((button) => {
     viewMode = button.dataset.mode;
     document.querySelectorAll(".view-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
     if (viewMode === "decision") {
-      const current = getNode(model.currentNodeId);
-      view.scale = 1;
-      view.x = viewport.clientWidth / 2 - current.x;
-      view.y = viewport.clientHeight / 2 - current.y;
-      routeFilter = "all";
-      applyTransform();
-    } else fitView();
+      smoothPan(() => {
+        const current = getNode(model.currentNodeId);
+        view.scale = 1;
+        view.x = viewport.clientWidth / 2 - current.x;
+        view.y = viewport.clientHeight / 2 - current.y;
+        routeFilter = "all";
+        applyTransform();
+      });
+    } else smoothPan(fitView);
   });
 });
 

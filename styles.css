@@ -56,8 +56,11 @@ button { cursor: pointer; }
 .text-button { font-size: 12px; color: var(--muted); padding: 4px 0; border-bottom: 1px solid transparent; }
 .text-button:hover { color: var(--ink); border-bottom-color: currentColor; }
 
-.workspace { min-height: 0; display: grid; grid-template-columns: 300px minmax(500px, 1fr) 0; }
+.workspace { min-height: 0; display: grid; grid-template-columns: 300px minmax(500px, 1fr) 0; transition: grid-template-columns .32s cubic-bezier(.2,.8,.25,1); }
 .workspace.detail-open { grid-template-columns: 300px minmax(500px, 1fr) 340px; }
+.workspace.left-collapsed { grid-template-columns: 0 minmax(500px, 1fr) 0; }
+.workspace.left-collapsed.detail-open { grid-template-columns: 0 minmax(500px, 1fr) 340px; }
+.workspace.left-collapsed .sidebar-left { padding: 0; border-right: 0; min-width: 0; overflow: hidden; }
 .sidebar {
   background: rgba(255, 253, 248, .68); position: relative; z-index: 10; overflow-y: auto;
   scrollbar-width: thin; scrollbar-color: var(--paper-deep) transparent;
@@ -78,7 +81,8 @@ button { cursor: pointer; }
 .panel-section { border-top: 1px solid var(--line); padding: 22px 0; }
 .section-title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .section-title-row h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.now-badge { font-size: 10px; background: var(--red); color: white; padding: 4px 7px; letter-spacing: .1em; }
+#currentNodeTitle { font-family: Georgia, "Songti SC", serif; font-size: 20px; font-weight: 500; margin: 2px 0 0; }
+.now-badge { font-size: 10px; background: var(--red); color: white; padding: 4px 7px; letter-spacing: .1em; box-shadow: 0 0 0 4px rgba(215,74,58,.1); }
 .progress-track { height: 4px; background: var(--paper-deep); margin: 18px 0 10px; overflow: hidden; }
 .progress-track span { display: block; height: 100%; width: 0; background: var(--red); transition: width .4s ease; }
 .progress-copy { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
@@ -110,7 +114,7 @@ button { cursor: pointer; }
   background-size: 18px 18px;
 }
 .canvas-hud { position: absolute; z-index: 8; left: 18px; right: 18px; top: 14px; display: flex; justify-content: space-between; pointer-events: none; }
-.view-tabs, .canvas-tools { pointer-events: auto; display: flex; align-items: center; padding: 3px; gap: 2px; background: rgba(255,253,248,.9); border: 1px solid var(--line); box-shadow: 0 5px 18px rgba(63,57,45,.07); }
+.view-tabs, .canvas-tools { pointer-events: auto; display: flex; align-items: center; padding: 3px; gap: 2px; background: rgba(255,253,248,.78); backdrop-filter: blur(10px); border: 1px solid rgba(50,49,43,.08); box-shadow: 0 4px 14px rgba(63,57,45,.05); }
 .view-tab { border: 0; background: none; padding: 9px 13px; font-size: 12px; color: var(--muted); }
 .view-tab.active { background: var(--ink); color: var(--white); }
 .tool-button { min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 8px; color: var(--muted); font-size: 12px; }
@@ -122,14 +126,15 @@ button { cursor: pointer; }
 .edge-color-dot.best { background: var(--red); }
 .edge-color-dot.worst { background: var(--blue); }
 .zoom-label { width: 42px; text-align: center; font-size: 11px; color: var(--muted); }
-.canvas-tip {
-  position: absolute; z-index: 8; top: 62px; left: 50%; transform: translateX(-50%); display: flex;
-  align-items: center; gap: 9px; padding: 9px 12px; background: rgba(36,36,31,.85); color: var(--white);
-  font-size: 11px; border-radius: 2px; transition: .2s ease;
+.sidebar-toggle {
+  position: absolute; z-index: 9; left: 0; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 48px; display: grid; place-items: center; color: var(--muted);
+  background: rgba(255,253,248,.92); border: 1px solid var(--line); border-left: 0;
+  border-radius: 0 6px 6px 0; box-shadow: 4px 0 14px rgba(63,57,45,.06); transition: color .2s ease, background .2s ease;
 }
-.canvas-tip.hidden { opacity: 0; pointer-events: none; transform: translate(-50%, -5px); }
-.tip-icon { display: grid; place-items: center; width: 14px; height: 14px; border: 1px solid rgba(255,255,255,.4); border-radius: 50%; font-size: 8px; }
-.canvas-tip button { border: 0; background: none; color: white; opacity: .6; }
+.sidebar-toggle:hover { color: var(--ink); background: var(--white); }
+.sidebar-toggle svg { width: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform .28s cubic-bezier(.2,.8,.25,1); }
+.workspace.left-collapsed .sidebar-toggle svg { transform: rotate(180deg); }
 .graph-viewport { position: absolute; inset: 0; overflow: hidden; cursor: grab; }
 .graph-viewport.panning { cursor: grabbing; }
 .graph-world { width: 2400px; height: 1500px; position: absolute; transform-origin: 0 0; }
@@ -195,6 +200,12 @@ button { cursor: pointer; }
 .empty-orbit span { width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 8px var(--red-soft); }
 .empty-detail h3 { font-family: Georgia, serif; font-weight: 400; font-size: 20px; }
 .hidden { display: none !important; }
+.detail-content { animation: detailIn .34s cubic-bezier(.2,.8,.25,1); }
+.detail-content > * { animation: detailRise .42s cubic-bezier(.2,.8,.25,1) backwards; }
+.detail-content > *:nth-child(2) { animation-delay: .04s; }
+.detail-content > *:nth-child(3) { animation-delay: .08s; }
+.detail-content > *:nth-child(4) { animation-delay: .12s; }
+.detail-content > *:nth-child(n+5) { animation-delay: .16s; }
 .detail-header { display: flex; justify-content: space-between; gap: 10px; }
 .detail-header h2 { font-family: Georgia, "Songti SC", serif; margin: 7px 0; font-size: 27px; font-weight: 500; }
 .detail-description { color: var(--muted); font-size: 13px; line-height: 1.75; }
@@ -238,4 +249,36 @@ dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 
   body { overflow: auto; }
   .app-shell { min-width: 720px; }
   .topbar .ghost-button { display: none; }
+}
+
+/* ---------- Motion ---------- */
+@keyframes nodeEnter {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(.82); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+.graph-node.node-enter { animation: nodeEnter .52s cubic-bezier(.2,.85,.25,1) both; animation-delay: var(--enter-delay, 0ms); }
+
+@keyframes detailIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes detailRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* Camera easing for deliberate moves only (toggled from JS). */
+.graph-world.smooth { transition: transform .52s cubic-bezier(.2,.8,.25,1); }
+
+/* Draw the canvas in on first paint. */
+@keyframes shellFade { from { opacity: 0; } to { opacity: 1; } }
+.canvas-panel { animation: shellFade .6s ease both; }
+
+/* Keep the eye on the present: a slow, quiet breath on the current node. */
+@keyframes ringPulse {
+  0%, 100% { opacity: .5; transform: scale(1); }
+  50%      { opacity: 1; transform: scale(1.05); }
+}
+.graph-node.current .node-ring { animation: ringPulse 3.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
 }

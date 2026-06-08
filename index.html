@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f3efe6" />
     <title>可能性最大模型</title>
-    <link rel="stylesheet" href="./styles.css?v=5" />
+    <link rel="stylesheet" href="./styles.css?v=7" />
   </head>
   <body>
     <div class="app-shell">
@@ -42,7 +42,6 @@
           <section class="sidebar-heading">
             <p class="eyebrow">人生模型 / LIFE MODEL</p>
             <h2>从已知，推演未知</h2>
-            <p class="muted">每一个选择都不是孤立的点，而是一条正在形成的路径。</p>
           </section>
 
           <section class="metric-grid">
@@ -99,6 +98,9 @@
         </aside>
 
         <section class="canvas-panel" id="canvasPanel">
+          <button class="sidebar-toggle" id="toggleLeftBtn" title="收起 / 展开侧栏" aria-label="收起侧栏">
+            <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
+          </button>
           <div class="canvas-hud">
             <div class="view-tabs">
               <button class="view-tab active" data-mode="timeline">人生图谱</button>
@@ -128,12 +130,6 @@
               <span id="zoomLabel" class="zoom-label">100%</span>
               <button class="tool-button" id="zoomInBtn" title="放大">＋</button>
             </div>
-          </div>
-
-          <div class="canvas-tip" id="canvasTip">
-            <span class="tip-icon">i</span>
-            <span>普通线表示连接事实 · 改字模式下点击连线可修改文字</span>
-            <button id="dismissTip" aria-label="关闭">×</button>
           </div>
 
           <div class="graph-viewport" id="graphViewport">
@@ -270,6 +266,6 @@
     </dialog>
 
     <div class="toast" id="toast"></div>
-    <script src="./app.js?v=8"></script>
+    <script src="./app.js?v=10"></script>
   </body>
 </html>
