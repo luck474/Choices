@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f3efe6" />
     <title>可能性最大模型</title>
-    <link rel="stylesheet" href="./styles.css?v=7" />
+    <link rel="stylesheet" href="./styles.css?v=8" />
   </head>
   <body>
     <div class="app-shell">
@@ -26,6 +26,12 @@
         </div>
 
         <div class="topbar-actions">
+          <button class="icon-button" id="undoBtn" title="撤销 (Ctrl/Cmd+Z)" aria-label="撤销" disabled>
+            <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5" /><path d="M4 9h10a6 6 0 0 1 0 12h-3" /></svg>
+          </button>
+          <button class="icon-button" id="redoBtn" title="重做 (Shift+Ctrl/Cmd+Z)" aria-label="重做" disabled>
+            <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5" /><path d="M20 9H10a6 6 0 0 0 0 12h3" /></svg>
+          </button>
           <button class="icon-button" id="resetViewBtn" title="重置视图" aria-label="重置视图">
             <svg viewBox="0 0 24 24"><path d="M4 7v5h5M20 17v-5h-5M6.1 16A7 7 0 0 0 18 17M17.9 8A7 7 0 0 0 6 7" /></svg>
           </button>
@@ -198,7 +204,10 @@
 
             <div class="detail-actions">
               <button class="danger-button" id="deleteNodeBtn">删除节点</button>
-              <button class="primary-button" id="setCurrentBtn">设为当前</button>
+              <div class="detail-actions-group">
+                <button class="ghost-button" id="editNodeBtn">编辑</button>
+                <button class="primary-button" id="setCurrentBtn">设为当前</button>
+              </div>
             </div>
           </div>
         </aside>
@@ -259,6 +268,7 @@
         <label>显示文字<input id="edgeTextInput" name="label" maxlength="30" placeholder="例如：关键转折 / 资源积累" /></label>
         <p class="muted">留空后保存，会清除这条连线上的文字。</p>
         <menu>
+          <button type="button" class="danger-button menu-start" id="deleteEdgeBtn">删除连线</button>
           <button type="button" class="ghost-button" id="cancelEdgeTextDialogBtn">取消</button>
           <button value="default" class="primary-button">保存文字</button>
         </menu>
@@ -266,6 +276,6 @@
     </dialog>
 
     <div class="toast" id="toast"></div>
-    <script src="./app.js?v=11"></script>
+    <script src="./app.js?v=12"></script>
   </body>
 </html>

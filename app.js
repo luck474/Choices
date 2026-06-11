@@ -112,6 +112,45 @@ function normalizeModel(value) {
   return value;
 }
 
+// Undo/redo: snapshots of the whole model, captured *before* each mutation.
+// Notes typing is deliberately excluded — the textarea has native undo.
+const undoStack = { past: [], future: [] };
+const HISTORY_LIMIT = 50;
+
+function pushHistory(snapshot = JSON.stringify(model)) {
+  undoStack.past.push(snapshot);
+  if (undoStack.past.length > HISTORY_LIMIT) undoStack.past.shift();
+  undoStack.future.length = 0;
+  updateUndoButtons();
+}
+
+function undo() {
+  if (!undoStack.past.length) return showToast("没有可撤销的操作");
+  undoStack.future.push(JSON.stringify(model));
+  model = JSON.parse(undoStack.past.pop());
+  afterHistoryRestore("已撤销");
+}
+
+function redo() {
+  if (!undoStack.future.length) return showToast("没有可重做的操作");
+  undoStack.past.push(JSON.stringify(model));
+  model = JSON.parse(undoStack.future.pop());
+  afterHistoryRestore("已重做");
+}
+
+function afterHistoryRestore(message) {
+  if (selectedId && !getNode(selectedId)) selectedId = null;
+  updateUndoButtons();
+  saveModel(message);
+  render();
+  showToast(message);
+}
+
+function updateUndoButtons() {
+  $("#undoBtn").disabled = !undoStack.past.length;
+  $("#redoBtn").disabled = !undoStack.future.length;
+}
+
 function saveModel(message = "模型已同步") {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(model));
   $("#modelStatus").textContent = message;
@@ -370,13 +409,27 @@ function renderDetails() {
     <label class="condition-item ${condition.done ? "done" : ""}">
       <input type="checkbox" data-condition-index="${index}" ${condition.done ? "checked" : ""}>
       <span>${escapeHtml(condition.text)}</span>
+      <button type="button" class="condition-remove" data-condition-remove="${index}" aria-label="删除条件" title="删除条件">×</button>
     </label>
   `).join("") : `<p class="muted">没有前置条件，此节点随时可行动。</p>`;
 
   $("#conditionList").querySelectorAll("[data-condition-index]").forEach((input) => {
     input.addEventListener("change", () => {
+      pushHistory();
       node.conditions[Number(input.dataset.conditionIndex)].done = input.checked;
       saveModel("条件已更新");
+      render();
+    });
+  });
+
+  $("#conditionList").querySelectorAll("[data-condition-remove]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      // a button inside a <label>: stop the label from toggling the checkbox
+      event.preventDefault();
+      event.stopPropagation();
+      pushHistory();
+      node.conditions.splice(Number(button.dataset.conditionRemove), 1);
+      saveModel("前置条件已删除");
       render();
     });
   });
@@ -394,7 +447,9 @@ function handleNodeClick(event) {
       showToast("已选择起点，请点击目标节点");
       renderNodes();
     } else if (connectionSource !== id) {
+      const snapshot = JSON.stringify(model);
       const created = createEdge(connectionSource, id);
+      if (created) pushHistory(snapshot);
       connectionSource = null;
       connecting = false;
       $("#connectBtn").classList.remove("active");
@@ -431,6 +486,11 @@ function handleEdgeInteraction(event) {
     editEdgeLabel(edge);
     return;
   }
+  if (edge.highlight === edgeHighlightMode) {
+    showToast(highlightLabel(edgeHighlightMode));
+    return;
+  }
+  pushHistory();
   edge.highlight = edgeHighlightMode;
   saveModel("线路评价已更新");
   renderEdges();
@@ -451,7 +511,7 @@ function highlightLabel(highlight) {
 function startNodeDrag(event) {
   if (connecting) return;
   const node = getNode(event.currentTarget.dataset.id);
-  dragState = { kind: "node", node, startX: event.clientX, startY: event.clientY, originX: node.x, originY: node.y, moved: false };
+  dragState = { kind: "node", node, startX: event.clientX, startY: event.clientY, originX: node.x, originY: node.y, moved: false, snapshot: JSON.stringify(model) };
   event.currentTarget.setPointerCapture(event.pointerId);
 }
 
@@ -483,6 +543,7 @@ window.addEventListener("pointermove", (event) => {
 window.addEventListener("pointerup", () => {
   if (dragState?.kind === "node" && dragState.moved) {
     suppressNodeClickId = dragState.node.id;
+    pushHistory(dragState.snapshot);
     renderMinimap();
     saveModel("节点位置已保存");
     clearTimeout(window.__clearSuppressNodeClickTimer);
@@ -542,21 +603,53 @@ function setZoom(next) {
   applyTransform();
 }
 
-function openNodeDialog({ parentId = null } = {}) {
+const EDITABLE_TYPES = ["event", "choice", "outcome"];
+
+function openNodeDialog({ parentId = null, nodeId = null } = {}) {
   const dialog = $("#nodeDialog");
   const form = $("#nodeForm");
   const parent = getNode(parentId);
+  const editing = getNode(nodeId);
   form.reset();
-  form.elements.type.value = parent ? suggestedChildType(parent) : "event";
-  form.elements.impact.value = 70;
-  form.elements.probability.value = 60;
-  form.querySelector(".advanced-fields").open = false;
-  $("#impactOutput").textContent = "70";
-  $("#probabilityOutput").textContent = "60%";
-  $("#dialogTitle").textContent = parent ? "添加后续节点" : "添加独立节点";
-  $("#dialogEyebrow").textContent = parent ? `从「${parent.title}」向后延伸` : "扩展模型";
-  $("#saveNodeBtn").textContent = parent ? "添加并连接" : "添加节点";
-  dialog.dataset.parentId = parentId || "";
+
+  // birth / current types are managed by the app, not the form — when editing
+  // such a node, show its real type but lock the select.
+  const typeSelect = form.elements.type;
+  typeSelect.querySelector("option[data-fixed]")?.remove();
+  typeSelect.disabled = false;
+
+  if (editing) {
+    form.elements.title.value = editing.title;
+    form.elements.route.value = editing.route || "neutral";
+    form.elements.description.value = editing.description || "";
+    form.elements.date.value = editing.date === "未设时间" ? "" : (editing.date || "");
+    form.elements.impact.value = editing.impact ?? 70;
+    form.elements.probability.value = editing.probability ?? 60;
+    if (EDITABLE_TYPES.includes(editing.type)) {
+      typeSelect.value = editing.type;
+    } else {
+      const fixed = document.createElement("option");
+      fixed.value = editing.type;
+      fixed.textContent = nodeTypeLabel(editing);
+      fixed.dataset.fixed = "true";
+      typeSelect.appendChild(fixed);
+      typeSelect.value = editing.type;
+      typeSelect.disabled = true;
+    }
+  } else {
+    typeSelect.value = parent ? suggestedChildType(parent) : "event";
+    form.elements.impact.value = 70;
+    form.elements.probability.value = 60;
+  }
+
+  form.querySelector(".advanced-fields").open = Boolean(editing);
+  $("#impactOutput").textContent = form.elements.impact.value;
+  $("#probabilityOutput").textContent = `${form.elements.probability.value}%`;
+  $("#dialogTitle").textContent = editing ? "编辑节点" : parent ? "添加后续节点" : "添加独立节点";
+  $("#dialogEyebrow").textContent = editing ? `修改「${editing.title}」` : parent ? `从「${parent.title}」向后延伸` : "扩展模型";
+  $("#saveNodeBtn").textContent = editing ? "保存修改" : parent ? "添加并连接" : "添加节点";
+  dialog.dataset.parentId = editing ? "" : parentId || "";
+  dialog.dataset.editId = nodeId || "";
   dialog.showModal();
 }
 
@@ -578,28 +671,38 @@ function getChildPosition(parent) {
 $("#nodeForm").addEventListener("submit", (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  const data = new FormData(form);
-  const parent = getNode($("#nodeDialog").dataset.parentId);
+  const dialog = $("#nodeDialog");
+  const editing = getNode(dialog.dataset.editId);
+  // read via form.elements (not FormData): a disabled type select has no entry
+  const fields = {
+    title: form.elements.title.value.trim(),
+    description: form.elements.description.value.trim(),
+    type: editing && form.elements.type.disabled ? editing.type : form.elements.type.value,
+    date: form.elements.date.value.trim() || "未设时间",
+    impact: Number(form.elements.impact.value),
+    probability: Number(form.elements.probability.value),
+    route: form.elements.route.value
+  };
+
+  if (editing) {
+    pushHistory();
+    Object.assign(editing, fields);
+    saveModel("节点已更新");
+    dialog.close();
+    render();
+    showToast("节点修改已保存");
+    return;
+  }
+
+  const parent = getNode(dialog.dataset.parentId);
   const center = screenToWorld(viewport.clientWidth / 2, viewport.clientHeight / 2);
   const position = parent ? getChildPosition(parent) : { x: clamp(center.x, 100, WORLD.width - 100), y: clamp(center.y, 100, WORLD.height - 100) };
-  const node = {
-    id: crypto.randomUUID(),
-    title: data.get("title").trim(),
-    description: data.get("description").trim(),
-    type: data.get("type"),
-    date: data.get("date").trim() || "未设时间",
-    impact: Number(data.get("impact")),
-    probability: Number(data.get("probability")),
-    route: data.get("route"),
-    x: position.x,
-    y: position.y,
-    conditions: [],
-    notes: ""
-  };
+  const node = { id: crypto.randomUUID(), ...fields, x: position.x, y: position.y, conditions: [], notes: "" };
+  pushHistory();
   model.nodes.push(node);
   if (parent) createEdge(parent.id, node.id, node.route);
   saveModel("新节点已添加");
-  $("#nodeDialog").close();
+  dialog.close();
   selectedId = node.id;
   pendingEnterIds.add(node.id);
   render();
@@ -612,6 +715,9 @@ function screenToWorld(x, y) {
 }
 
 $("#addNodeBtn").addEventListener("click", () => openNodeDialog());
+$("#editNodeBtn").addEventListener("click", () => { if (selectedId) openNodeDialog({ nodeId: selectedId }); });
+$("#undoBtn").addEventListener("click", undo);
+$("#redoBtn").addEventListener("click", redo);
 $("#addChoiceBtn").addEventListener("click", () => openNodeDialog({ parentId: model.currentNodeId }));
 $("#closeNodeDialogBtn").addEventListener("click", () => $("#nodeDialog").close());
 $("#cancelNodeDialogBtn").addEventListener("click", () => $("#nodeDialog").close());
@@ -694,6 +800,7 @@ $("#addConditionBtn").addEventListener("click", () => {
   if (!node) return;
   const text = prompt("这个选择需要先完成什么？");
   if (!text?.trim()) return;
+  pushHistory();
   node.conditions ||= [];
   node.conditions.push({ text: text.trim(), done: false });
   saveModel("前置条件已添加");
@@ -703,6 +810,7 @@ $("#addConditionBtn").addEventListener("click", () => {
 $("#setCurrentBtn").addEventListener("click", () => {
   const node = getNode(selectedId);
   if (!node) return;
+  pushHistory();
   const old = getNode(model.currentNodeId);
   if (old?.type === "current") old.type = "event";
   node.type = "current";
@@ -716,6 +824,7 @@ function deleteSelectedNode() {
   const node = getNode(selectedId);
   if (!node || node.type === "birth") return;
   if (!confirm(`确定删除“${node.title}”及相关连线吗？`)) return;
+  pushHistory();
   model.nodes = model.nodes.filter((item) => item.id !== node.id);
   model.edges = model.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id);
   if (model.currentNodeId === node.id) {
@@ -746,7 +855,9 @@ $("#importInput").addEventListener("change", async (event) => {
   try {
     const imported = JSON.parse(await file.text());
     if (!Array.isArray(imported.nodes) || !Array.isArray(imported.edges)) throw new Error("invalid");
-    model = normalizeModel(imported);
+    const next = normalizeModel(imported);
+    pushHistory();
+    model = next;
     selectedId = null;
     saveModel("模型已导入");
     render();
@@ -767,16 +878,41 @@ $("#edgeTextForm").addEventListener("submit", (event) => {
     $("#edgeTextDialog").close();
     return;
   }
-  edge.label = $("#edgeTextInput").value.trim();
-  saveModel("连线文字已更新");
+  const nextLabel = $("#edgeTextInput").value.trim();
+  if (nextLabel !== (edge.label || "")) {
+    pushHistory();
+    edge.label = nextLabel;
+    saveModel("连线文字已更新");
+    renderEdges();
+  }
   $("#edgeTextDialog").close();
-  renderEdges();
   showToast(edge.label ? "连线文字已更新" : "连线文字已清除");
+});
+
+$("#deleteEdgeBtn").addEventListener("click", () => {
+  const edge = model.edges.find((item) => item.id === editingEdgeId);
+  $("#edgeTextDialog").close();
+  if (!edge) return;
+  pushHistory();
+  model.edges = model.edges.filter((item) => item.id !== edge.id);
+  saveModel("连线已删除");
+  render();
+  showToast("连线已删除，可用撤销恢复");
 });
 window.addEventListener("resize", () => { if (viewMode === "timeline") fitView(); });
 
 window.addEventListener("keydown", (event) => {
   if (document.querySelector("dialog[open]") || event.target.closest("input, textarea, select")) return;
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    event.shiftKey ? redo() : undo();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
+    event.preventDefault();
+    redo();
+    return;
+  }
   if (event.key === "Escape") {
     if (connecting) {
       connecting = false;
@@ -816,6 +952,7 @@ function calculateRoutes() {
   const worst = ranked[0];
   const best = ranked[ranked.length - 1];
 
+  pushHistory();
   model.nodes.forEach((node) => {
     if (!isPastNode(node) && node.id !== model.currentNodeId) node.route = "neutral";
   });
@@ -850,6 +987,7 @@ function handleResetModel(event) {
   clearTimeout(handleResetModel.timer);
   button.dataset.armed = "false";
   button.textContent = "重置模型";
+  pushHistory();
   model = normalizeModel(clone(initialModel));
   selectedId = null;
   routeFilter = "all";
