@@ -1,5 +1,7 @@
 const WORLD = { width: 2400, height: 1500 };
 const STORAGE_KEY = "maximum-possibility-model-v1";
+const NODE_TYPES = new Set(["birth", "event", "current", "choice", "outcome"]);
+const ROUTE_VALUES = new Set(["neutral", "best", "worst"]);
 
 const initialModel = {
   currentNodeId: "now",
@@ -70,11 +72,43 @@ function loadModel() {
   }
 }
 
+// Repair anything loaded from storage or imported from a file: drop dangling
+// edges, coerce out-of-range values, and guarantee currentNodeId points at a
+// real node — malformed JSON must never crash the renderer.
 function normalizeModel(value) {
+  if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.edges) || !value.nodes.length) {
+    throw new Error("invalid model");
+  }
+  const ids = new Set();
+  value.nodes = value.nodes.filter((node) => {
+    if (!node || node.id == null || ids.has(node.id)) return false;
+    ids.add(node.id);
+    return true;
+  });
+  value.nodes.forEach((node) => {
+    node.title = String(node.title ?? "未命名节点");
+    node.type = NODE_TYPES.has(node.type) ? node.type : "event";
+    node.route = ROUTE_VALUES.has(node.route) ? node.route : "neutral";
+    node.x = clamp(Number.isFinite(Number(node.x)) ? Number(node.x) : WORLD.width / 2, 60, WORLD.width - 60);
+    node.y = clamp(Number.isFinite(Number(node.y)) ? Number(node.y) : WORLD.height / 2, 60, WORLD.height - 60);
+    if (node.impact != null) node.impact = clamp(Number(node.impact) || 0, 0, 100);
+    if (node.probability != null) node.probability = clamp(Number(node.probability) || 0, 0, 100);
+    node.notes = typeof node.notes === "string" ? node.notes : "";
+    node.conditions = Array.isArray(node.conditions)
+      ? node.conditions.filter((condition) => condition && condition.text != null)
+          .map((condition) => ({ text: String(condition.text), done: Boolean(condition.done) }))
+      : [];
+  });
+  value.edges = value.edges.filter((edge) => edge && ids.has(edge.from) && ids.has(edge.to) && edge.from !== edge.to);
   value.edges.forEach((edge) => {
-    edge.highlight = edge.highlight || edge.route || "neutral";
+    edge.id = edge.id ?? crypto.randomUUID();
+    edge.highlight = ROUTE_VALUES.has(edge.highlight || edge.route) ? (edge.highlight || edge.route) : "neutral";
+    edge.label = edge.label == null ? "" : String(edge.label);
     delete edge.route;
   });
+  if (!ids.has(value.currentNodeId)) {
+    value.currentNodeId = (value.nodes.find((node) => node.type === "current") || value.nodes[0]).id;
+  }
   return value;
 }
 
@@ -118,6 +152,10 @@ function smoothPan(run) {
   smoothPan.timer = setTimeout(() => graphWorld.classList.remove("smooth"), 540);
 }
 
+function addButtonRadius(node) {
+  return node.id === model.currentNodeId ? 92 : node.type === "birth" ? 38 : 78;
+}
+
 function renderNodes() {
   nodesLayer.innerHTML = "";
   model.nodes.forEach((node, index) => {
@@ -139,10 +177,9 @@ function renderNodes() {
     nodesLayer.appendChild(element);
 
     const addButton = document.createElement("button");
-    const radius = node.id === model.currentNodeId ? 92 : node.type === "birth" ? 38 : 78;
     addButton.className = "node-add-button";
     addButton.dataset.parentId = node.id;
-    addButton.style.left = `${node.x + radius}px`;
+    addButton.style.left = `${node.x + addButtonRadius(node)}px`;
     addButton.style.top = `${node.y}px`;
     addButton.setAttribute("aria-label", `从${node.title}新增后续节点`);
     addButton.title = `从“${node.title}”新增后续节点`;
@@ -176,15 +213,19 @@ function animateEdgeDraw(pathEl, delay) {
   });
 }
 
+function edgePath(from, to) {
+  const dx = Math.max(90, Math.abs(to.x - from.x) * 0.45);
+  const direction = to.x >= from.x ? 1 : -1;
+  return `M ${from.x} ${from.y} C ${from.x + dx * direction} ${from.y}, ${to.x - dx * direction} ${to.y}, ${to.x} ${to.y}`;
+}
+
 function renderEdges() {
   edgeGroup.innerHTML = "";
   model.edges.forEach((edge, index) => {
     const from = getNode(edge.from);
     const to = getNode(edge.to);
     if (!from || !to) return;
-    const dx = Math.max(90, Math.abs(to.x - from.x) * 0.45);
-    const direction = to.x >= from.x ? 1 : -1;
-    const path = `M ${from.x} ${from.y} C ${from.x + dx * direction} ${from.y}, ${to.x - dx * direction} ${to.y}, ${to.x} ${to.y}`;
+    const path = edgePath(from, to);
     const filtered = routeFilter !== "all" && edge.highlight !== routeFilter;
     const hitEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
     hitEl.setAttribute("d", path);
@@ -205,14 +246,46 @@ function renderEdges() {
 
     if (edge.label) {
       const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      text.setAttribute("x", (from.x + to.x) / 2);
-      text.setAttribute("y", (from.y + to.y) / 2 - 8);
+      positionEdgeLabel(text, from, to);
       text.setAttribute("class", `edge-label ${filtered ? "filtered" : ""}`);
       text.dataset.edgeId = edge.id;
       text.textContent = edge.label;
       text.addEventListener("click", handleEdgeInteraction);
       edgeGroup.appendChild(text);
     }
+  });
+}
+
+function positionEdgeLabel(text, from, to) {
+  text.setAttribute("x", (from.x + to.x) / 2);
+  text.setAttribute("y", (from.y + to.y) / 2 - 8);
+}
+
+// In-place position updates while dragging a node, so we don't rebuild the
+// whole DOM (and re-attach listeners) on every pointermove.
+function positionNodeElements(node) {
+  const element = nodesLayer.querySelector(`.graph-node[data-id="${node.id}"]`);
+  if (element) {
+    element.style.left = `${node.x}px`;
+    element.style.top = `${node.y}px`;
+  }
+  const addButton = nodesLayer.querySelector(`.node-add-button[data-parent-id="${node.id}"]`);
+  if (addButton) {
+    addButton.style.left = `${node.x + addButtonRadius(node)}px`;
+    addButton.style.top = `${node.y}px`;
+  }
+}
+
+function updateEdgesFor(nodeId) {
+  model.edges.forEach((edge) => {
+    if (edge.from !== nodeId && edge.to !== nodeId) return;
+    const from = getNode(edge.from);
+    const to = getNode(edge.to);
+    if (!from || !to) return;
+    const path = edgePath(from, to);
+    edgeGroup.querySelectorAll(`path[data-edge-id="${edge.id}"]`).forEach((el) => el.setAttribute("d", path));
+    const label = edgeGroup.querySelector(`text[data-edge-id="${edge.id}"]`);
+    if (label) positionEdgeLabel(label, from, to);
   });
 }
 
@@ -237,7 +310,7 @@ function renderSidebar() {
     </button>
   `).join("") : `<p class="muted">还没有从当前节点出发的选择。</p>`;
 
-  document.querySelectorAll("[data-choice-id]").forEach((button) => {
+  $("#choiceList").querySelectorAll("[data-choice-id]").forEach((button) => {
     button.addEventListener("click", () => selectNode(button.dataset.choiceId));
   });
 }
@@ -300,7 +373,7 @@ function renderDetails() {
     </label>
   `).join("") : `<p class="muted">没有前置条件，此节点随时可行动。</p>`;
 
-  document.querySelectorAll("[data-condition-index]").forEach((input) => {
+  $("#conditionList").querySelectorAll("[data-condition-index]").forEach((input) => {
     input.addEventListener("change", () => {
       node.conditions[Number(input.dataset.conditionIndex)].done = input.checked;
       saveModel("条件已更新");
@@ -398,7 +471,8 @@ window.addEventListener("pointermove", (event) => {
   if (dragState.kind === "node") {
     dragState.node.x = clamp(dragState.originX + dx / view.scale, 60, WORLD.width - 60);
     dragState.node.y = clamp(dragState.originY + dy / view.scale, 60, WORLD.height - 60);
-    renderNodes(); renderEdges(); renderMinimap();
+    positionNodeElements(dragState.node);
+    updateEdgesFor(dragState.node.id);
   } else {
     view.x = dragState.originX + dx;
     view.y = dragState.originY + dy;
@@ -409,6 +483,7 @@ window.addEventListener("pointermove", (event) => {
 window.addEventListener("pointerup", () => {
   if (dragState?.kind === "node" && dragState.moved) {
     suppressNodeClickId = dragState.node.id;
+    renderMinimap();
     saveModel("节点位置已保存");
     clearTimeout(window.__clearSuppressNodeClickTimer);
     window.__clearSuppressNodeClickTimer = setTimeout(() => {
@@ -440,6 +515,7 @@ function applyTransform() {
 }
 
 function fitView() {
+  if (!model.nodes.length) return;
   const rect = viewport.getBoundingClientRect();
   const xs = model.nodes.map((node) => node.x), ys = model.nodes.map((node) => node.y);
   const bounds = { minX: Math.min(...xs) - 160, maxX: Math.max(...xs) + 160, minY: Math.min(...ys) - 160, maxY: Math.max(...ys) + 160 };
@@ -587,8 +663,12 @@ document.querySelectorAll(".view-tab").forEach((button) => {
     viewMode = button.dataset.mode;
     document.querySelectorAll(".view-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
     if (viewMode === "decision") {
+      const current = getNode(model.currentNodeId);
+      if (!current) {
+        smoothPan(fitView);
+        return;
+      }
       smoothPan(() => {
-        const current = getNode(model.currentNodeId);
         view.scale = 1;
         view.x = viewport.clientWidth / 2 - current.x;
         view.y = viewport.clientHeight / 2 - current.y;
@@ -599,11 +679,14 @@ document.querySelectorAll(".view-tab").forEach((button) => {
   });
 });
 
+let notesSaveTimer;
 $("#detailNotes").addEventListener("input", (event) => {
   const node = getNode(selectedId);
   if (!node) return;
   node.notes = event.target.value;
-  saveModel("备注已保存");
+  // debounce: avoid a localStorage write per keystroke
+  clearTimeout(notesSaveTimer);
+  notesSaveTimer = setTimeout(() => saveModel("备注已保存"), 400);
 });
 
 $("#addConditionBtn").addEventListener("click", () => {
@@ -629,17 +712,21 @@ $("#setCurrentBtn").addEventListener("click", () => {
   showToast(`“${node.title}”已设为当前节点`);
 });
 
-$("#deleteNodeBtn").addEventListener("click", () => {
+function deleteSelectedNode() {
   const node = getNode(selectedId);
   if (!node || node.type === "birth") return;
   if (!confirm(`确定删除“${node.title}”及相关连线吗？`)) return;
   model.nodes = model.nodes.filter((item) => item.id !== node.id);
   model.edges = model.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id);
-  if (model.currentNodeId === node.id) model.currentNodeId = "birth";
+  if (model.currentNodeId === node.id) {
+    model.currentNodeId = (model.nodes.find((item) => item.type === "current") || model.nodes[0])?.id ?? null;
+  }
   selectedId = null;
   saveModel("节点已删除");
   render();
-});
+}
+
+$("#deleteNodeBtn").addEventListener("click", deleteSelectedNode);
 
 $("#exportBtn").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(model, null, 2)], { type: "application/json" });
@@ -688,6 +775,29 @@ $("#edgeTextForm").addEventListener("submit", (event) => {
 });
 window.addEventListener("resize", () => { if (viewMode === "timeline") fitView(); });
 
+window.addEventListener("keydown", (event) => {
+  if (document.querySelector("dialog[open]") || event.target.closest("input, textarea, select")) return;
+  if (event.key === "Escape") {
+    if (connecting) {
+      connecting = false;
+      connectionSource = null;
+      $("#connectBtn").classList.remove("active");
+      showToast("已退出连接模式");
+      renderNodes();
+    } else if (editingEdgeText) {
+      editingEdgeText = false;
+      $("#editEdgeTextBtn").classList.remove("active");
+      showToast("已退出改字模式");
+    } else if (selectedId) {
+      selectedId = null;
+      render();
+    }
+  } else if ((event.key === "Delete" || event.key === "Backspace") && selectedId) {
+    event.preventDefault();
+    deleteSelectedNode();
+  }
+});
+
 function showToast(message) {
   toast.textContent = message;
   toast.classList.add("show");
@@ -710,7 +820,8 @@ function calculateRoutes() {
     if (!isPastNode(node) && node.id !== model.currentNodeId) node.route = "neutral";
   });
   model.edges.forEach((edge) => {
-    if (edge.from === model.currentNodeId || !isPastNode(getNode(edge.from))) edge.highlight = "neutral";
+    const fromNode = getNode(edge.from);
+    if (!fromNode || edge.from === model.currentNodeId || !isPastNode(fromNode)) edge.highlight = "neutral";
   });
 
   markPath(worst.path, "worst");
